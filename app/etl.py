@@ -12,6 +12,8 @@ S3_BUCKET = os.getenv("S3_BUCKET_NAME", "northwind")
 
 CH_HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
 CH_PORT = int(os.getenv("CLICKHOUSE_PORT", 8123))
+CH_USER = os.getenv("CLICKHOUSE_USER", "default")
+CH_PASS = os.getenv("CLICKHOUSE_PASSWORD", "")
 
 def get_s3_client():
     return boto3.client(
@@ -24,7 +26,7 @@ def get_s3_client():
 
 def upload_initial_data(s3_client):
     """Sobe o arquivo CSV local para o MinIO se ele existir."""
-    local_path = 'data/northwind_orders.csv'
+    local_path = '/data/northwind_orders.csv'
     if os.path.exists(local_path):
         print(f"Subindo {local_path} para o bucket {S3_BUCKET}...")
         try:
@@ -47,14 +49,14 @@ def main():
     
     # 1. Conectar ao ClickHouse e preparar tabela
     try:
-        client = clickhouse_connect.get_client(host=CH_HOST, port=CH_PORT)
+        client = clickhouse_connect.get_client(host=CH_HOST, port=CH_PORT, username=CH_USER, password=CH_PASS)
         
         client.command("""
         CREATE TABLE IF NOT EXISTS orders (
             order_id UInt32,
             customer_id String,
             order_date Date,
-            total_amount Float64
+            freight Float64
         ) ENGINE = MergeTree()
         ORDER BY order_id
         """)
@@ -65,13 +67,16 @@ def main():
         obj = s3.get_object(Bucket=S3_BUCKET, Key='raw/northwind_orders.csv')
         df = pd.read_csv(BytesIO(obj['Body'].read()))
         
-        # 3. Carga Idempotente (Simples: Limpa antes de carregar)
-        # Em produção, usaríamos uma lógica de controle de duplicados mais refinada
+        # 3. Filtrar colunas
+        cols = ['order_id', 'customer_id', 'order_date', 'freight']
+        df_filtered = df[cols]
+        
+        # 4. Carga Idempotente (Simples: Limpa antes de carregar)
         client.command("TRUNCATE TABLE orders")
         
-        # 4. Inserir no ClickHouse
-        client.insert('orders', df.values.tolist(), column_names=list(df.columns))
-        print(f"Sucesso! {len(df)} registros carregados no ClickHouse.")
+        # 5. Inserir no ClickHouse
+        client.insert('orders', df_filtered.values.tolist(), column_names=cols)
+        print(f"Sucesso! {len(df_filtered)} registros carregados no ClickHouse.")
 
     except Exception as e:
         print(f"Erro durante o processo ETL: {e}")
