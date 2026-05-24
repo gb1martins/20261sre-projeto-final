@@ -1,0 +1,6 @@
+streamlit
+pandas
+clickhouse-connect
+boto3
+polars
+python-dotenv
