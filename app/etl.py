@@ -51,6 +51,9 @@ def main():
     try:
         client = clickhouse_connect.get_client(host=CH_HOST, port=CH_PORT, username=CH_USER, password=CH_PASS)
         
+        # Durante o desenvolvimento, dropamos a tabela para garantir que o schema esteja atualizado
+        client.command("DROP TABLE IF EXISTS orders")
+        
         client.command("""
         CREATE TABLE IF NOT EXISTS orders (
             order_id UInt32,
@@ -67,9 +70,10 @@ def main():
         obj = s3.get_object(Bucket=S3_BUCKET, Key='raw/northwind_orders.csv')
         df = pd.read_csv(BytesIO(obj['Body'].read()))
         
-        # 3. Filtrar colunas
+        # 3. Filtrar colunas e converter tipos
         cols = ['order_id', 'customer_id', 'order_date', 'freight']
-        df_filtered = df[cols]
+        df_filtered = df[cols].copy()
+        df_filtered['order_date'] = pd.to_datetime(df_filtered['order_date'])
         
         # 4. Carga Idempotente (Simples: Limpa antes de carregar)
         client.command("TRUNCATE TABLE orders")
