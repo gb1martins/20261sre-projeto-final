@@ -1,16 +1,17 @@
 import streamlit as st
 import clickhouse_connect
 import os
+import pandas as pd
 
-st.set_page_config(page_title="Northwind Dashboard", layout="wide")
+st.set_page_config(page_title="Northwind Medallion Dashboard", layout="wide")
 
-st.title("🚀 Northwind Analytics Dashboard")
+st.title("🚀 Northwind Analytics Dashboard (Medallion Architecture)")
 
 # Configurações de conexão
 CH_HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
 CH_PORT = int(os.getenv("CLICKHOUSE_PORT", 8123))
-CH_USER = os.getenv("CLICKHOUSE_USER", "default")
-CH_PASS = os.getenv("CLICKHOUSE_PASSWORD", "")
+CH_USER = os.getenv("CLICKHOUSE_USER", "northwind")
+CH_PASS = os.getenv("CLICKHOUSE_PASSWORD", "northwind")
 
 @st.cache_resource
 def get_client():
@@ -23,17 +24,52 @@ def get_client():
 client = get_client()
 
 if client:
-    st.success("Conectado ao ClickHouse!")
+    st.sidebar.success("Conectado ao ClickHouse!")
     
-    # Exemplo de consulta
-    try:
-        tables = client.query("SHOW TABLES").result_rows
-        st.sidebar.write("### Tabelas Disponíveis")
-        for table in tables:
-            st.sidebar.code(table[0])
+    # Sidebar: Navegação entre camadas
+    layer = st.sidebar.selectbox("Selecione a Camada de Dados", ["Ouro (Business)", "Prata (Trusted)"])
+    
+    if layer == "Ouro (Business)":
+        st.header("🏆 Camada Ouro - Métricas de Negócio")
+        
+        try:
+            # KPI: Resumo Geral
+            kpi_data = client.query("""
+                SELECT 
+                    round(sum(total_order_value), 2) as faturamento,
+                    count(order_id) as total_pedidos,
+                    round(avg(total_order_value), 2) as ticket_medio
+                FROM gold_order_metrics
+            """).result_rows[0]
             
-        st.info("Aguardando dados serem carregados pelo ETL...")
-    except Exception as e:
-        st.error(f"Erro ao executar query: {e}")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Faturamento Total", f"$ {kpi_data[0]:,.2f}")
+            col2.metric("Total de Pedidos", f"{kpi_data[1]}")
+            col3.metric("Ticket Médio", f"$ {kpi_data[2]:,.2f}")
+            
+            # Gráfico: Vendas por País
+            st.subheader("🌎 Vendas por País")
+            df_country = client.query_df("SELECT ship_country, sum(total_order_value) as vendas FROM gold_order_metrics GROUP BY ship_country ORDER BY vendas DESC")
+            st.bar_chart(df_country.set_index('ship_country'))
+            
+            # Tabela de Dados Gold
+            st.subheader("📋 Detalhes dos Pedidos (Gold)")
+            df_gold = client.query_df("SELECT * FROM gold_order_metrics LIMIT 100")
+            st.dataframe(df_gold)
+            
+        except Exception as e:
+            st.error(f"Erro ao carregar dados da Camada Ouro: {e}")
+            st.info("Certifique-se de que o pipeline ETL foi executado.")
+
+    else:
+        st.header("🥈 Camada Prata - Dados Estruturados")
+        table_silver = st.selectbox("Selecione a Tabela", ["silver_orders", "silver_order_details"])
+        
+        try:
+            df_silver = client.query_df(f"SELECT * FROM {table_silver} LIMIT 100")
+            st.dataframe(df_silver)
+        except Exception as e:
+            st.error(f"Erro ao carregar dados da Camada Prata: {e}")
+
 else:
     st.warning("Verifique se o serviço ClickHouse está rodando.")
