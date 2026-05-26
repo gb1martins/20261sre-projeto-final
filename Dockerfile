@@ -1,23 +1,18 @@
-FROM python:3.11-slim
+FROM apache/airflow:2.7.1-python3.11
 
-WORKDIR /app
+USER root
 
-# Instalação de dependências do sistema
+# Instalação de dependências do sistema necessárias para ClickHouse e outras libs
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copia os arquivos de dependências
-# (Assumindo que criaremos o requirements.txt a seguir)
-COPY requirements.txt .
+USER airflow
 
-# Instalação das bibliotecas Python
+# Copia e instala dependências Python
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia o restante do código
-COPY . .
-
+# Expõe a porta do Streamlit
 EXPOSE 8501
-
-# O comando padrão será sobrescrito pelo docker-compose para cada serviço
