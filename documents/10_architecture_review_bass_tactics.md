@@ -1,74 +1,84 @@
 # Revisão Arquitetural: Táticas de Len Bass (Northwind Medallion Pipeline)
 
-Este documento apresenta uma revisão detalhada da arquitetura do projeto Northwind, utilizando como framework as **Táticas Arquiteturais de Len Bass** (4ª Edição), conforme as diretrizes de SRE e Cloud Computing.
+Este documento apresenta uma revisão detalhada e completa da arquitetura do projeto Northwind, fundamentada nas **Táticas Arquiteturais de Len Bass** (4ª Edição), conforme as diretrizes de SRE e Cloud Computing.
 
 ---
 
 ## 1. Disponibilidade (Availability)
-*Foco: Manter o sistema operacional e recuperar-se de falhas.*
+*Foco: Manter o sistema operacional e recuperar-se de falhas críticas.*
 
-| Tática (Bass) | Implementação no Projeto | Observação Técnica |
+| Tática (Bass) | Implementação no Projeto | Observação Técnica (SRE) |
 |:--- |:--- |:--- |
-| **Ping/Echo / Heartbeat** | ✅ Implementado | Uso de `healthcheck` no `docker-compose.yml` para Postgres, Airflow, ClickHouse e MinIO. Garante que dependentes só subam após o serviço estar "saudável". |
-| **Retry** | ✅ Implementado | Configurado via `default_args` na DAG do Airflow (`'retries': 1`, `'retry_delay': timedelta(minutes=5)`). Essencial para falhas de rede transitórias. |
-| **Exception Handling** | ✅ Implementado | O script `etl.py` utiliza blocos `try-except` com `traceback.print_exc()` para capturar e logar falhas durante a execução. |
-| **Idempotency** | ✅ Implementado | O pipeline utiliza a técnica de "Drop and Recreate" (e.g., `DROP TABLE IF EXISTS ...`) nas camadas Silver e Gold, permitindo re-execuções sem duplicidade de dados. |
-| **Circuit Breaker** | ❌ Lacuna | Não há um mecanismo de interrupção para evitar que o Airflow continue tentando disparar o ETL caso o ClickHouse ou MinIO estejam persistentemente fora do ar. |
-| **Fail-fast** | ✅ Implementado | O pipeline interrompe a execução imediatamente (`sys.exit` implícito no erro do Python Operator) se uma tarefa crítica falhar. |
+| **Ping/Echo / Heartbeat** | ✅ Implementado | `healthcheck` rigoroso no `docker-compose.yml` para todos os serviços. O `airflow-scheduler` só inicia o pipeline quando MinIO, ClickHouse e Postgres estão `healthy`. |
+| **Retry** | ✅ Implementado | Configurado na DAG do Airflow. Falhas de rede transitórias entre o Ingestor e o MinIO são mitigadas por retentativas automáticas com backoff. |
+| **Idempotency** | ✅ Implementado | Tática central: O ETL utiliza `DROP TABLE IF EXISTS` ou `TRUNCATE` antes da carga. Garante que o estado final seja consistente mesmo após múltiplas falhas e reinícios. |
+| **Circuit Breaker** | ❌ Lacuna | **Ponto Crítico:** O pipeline não "abre o circuito" se o ClickHouse estiver lento ou instável, o que pode causar um efeito cascata de consumo de CPU/Memória no host. |
+| **Exception Handling** | ✅ Implementado | Blocos `try-except` capturam erros de esquema e conexão, gerando logs estruturados para diagnóstico rápido. |
 
 ## 2. Desempenho (Performance)
-*Foco: Controlar a latência, throughput e eficiência de recursos.*
+*Foco: Gerenciar latência (tempo de resposta) e throughput (vazão de dados).*
 
-| Tática (Bass) | Implementação no Projeto | Observação Técnica |
+| Tática (Bass) | Implementação no Projeto | Observação Técnica (SRE) |
 |:--- |:--- |:--- |
-| **Cache** | ✅ Implementado | Uso do decorador `@st.cache_resource` no Streamlit para manter a conexão com o ClickHouse ativa e evitar reconexões desnecessárias. |
-| **Manage Sampling Rate** | ❌ Não Aplicável | Dado o volume atual (Northwind CSV), não há necessidade de amostragem, mas seria uma tática para volumes de Terabytes. |
-| **Maximize Throughput** | ⚠️ Parcial | O uso do ClickHouse (colunar) maximiza a vazão em queries analíticas, mas o processamento Python (Pandas) é single-threaded e pode ser um gargalo em volumes maiores. |
+| **Cache** | ✅ Implementado | `@st.cache_resource` e `@st.cache_data` no Streamlit. Reduz o tráfego de rede e a carga no ClickHouse para consultas repetitivas de KPI. |
+| **Increase Resources** | ✅ Implementado | Escolha do ClickHouse como motor OLAP. Tática de "Vertical Scaling" implícita na performance colunar para grandes agregações (Net Revenue). |
+| **Batch Processing** | ⚠️ Parcial | O processamento é feito em arquivos completos (CSV). Para escalas maiores, a tática de "Micro-batching" ou processamento em chunks no Pandas/Polars seria necessária. |
+| **Concurrency Management**| ❌ Lacuna | O Ingestor Python é single-process. Para aumentar o throughput, poderia ser utilizada a tática de paralelismo nas tasks da DAG (Ingestão de Orders e Details em paralelo). |
 
 ## 3. Segurança (Security)
-*Foco: Proteger contra acesso não autorizado e garantir a integridade.*
+*Foco: Resistir a ataques e proteger a integridade dos dados financeiros.*
 
-| Tática (Bass) | Implementação no Projeto | Observação Técnica |
+| Tática (Bass) | Implementação no Projeto | Observação Técnica (SRE) |
 |:--- |:--- |:--- |
-| **Limit Exposure** | ✅ Implementado | Mapeamento de portas não convencionais (e.g., 9004 para o Native Interface do ClickHouse) e isolamento em rede Docker interna. |
-| **Authenticate Actors** | ✅ Implementado | Credenciais configuradas via variáveis de ambiente para MinIO, ClickHouse e Airflow (RBAC). |
-| **Authorize Actors** | ⚠️ Parcial | Uso de perfis padrão (admin). Falta granularidade de permissões (e.g., usuário de dashboard apenas com leitura na Gold). |
+| **Limit Exposure** | ✅ Implementado | Uso de redes internas Docker. Serviços como ClickHouse e MinIO não expõem suas portas de administração diretamente sem mapeamento explícito. |
+| **Authenticate Actors** | ✅ Implementado | Uso de credenciais fortes via ENV. Separação de identidades para Airflow, ClickHouse e MinIO. |
+| **Authorize Actors** | ⚠️ Parcial | Atualmente utiliza usuários admin. Recomendação: Criar um usuário `read-only` no ClickHouse exclusivo para o Dashboard Streamlit. |
 
 ## 4. Testabilidade (Testability)
-*Foco: Facilitar a descoberta de defeitos e validação de requisitos.*
+*Foco: Facilitar a descoberta de falhas antes da produção.*
 
-| Tática (Bass) | Implementação no Projeto | Observação Técnica |
+| Tática (Bass) | Implementação no Projeto | Observação Técnica (SRE) |
 |:--- |:--- |:--- |
-| **Instrumentation** | ✅ Implementado | Logs detalhados emitidos pelo script Python e capturados pelo Airflow. Uso de metadados do Airflow para monitorar duração e status. |
-| **Unit Testing** | ❌ Lacuna | Ausência de testes unitários (Pytest) para as funções de transformação (`process_silver`, `process_gold`). |
-| **Integration Testing** | ✅ Implementado | Validado via execução ponta-a-ponta (E2E) no ambiente Docker, simulando o ciclo de vida completo do dado. |
+| **Instrumentation** | ✅ Implementado | Logs detalhados em todas as camadas (Bronze, Silver, Gold). O Airflow atua como painel de controle da instrumentação. |
+| **Separate Interface** | ✅ Implementado | A lógica de ETL (`app/etl.py`) está desacoplada da orquestração (`dags/`), permitindo testes isolados da lógica de negócio. |
+| **Unit Testing** | ❌ Lacuna | Falta de testes unitários para a fórmula de **Receita Líquida**. É uma tática de Len Bass essencial para garantir a correção de transformações complexas. |
 
 ## 5. Modificabilidade (Modifiability)
-*Foco: Reduzir o custo e tempo de implementação de mudanças.*
+*Foco: Reduzir o custo de mudança (Schema Drift, novos KPIs).*
 
-| Tática (Bass) | Implementação no Projeto | Observação Técnica |
+| Tática (Bass) | Implementação no Projeto | Observação Técnica (SRE) |
 |:--- |:--- |:--- |
-| **Schema-on-read** | ✅ Implementado | A Camada Bronze armazena arquivos brutos no MinIO sem validação prévia de esquema, facilitando a ingestão de novos formatos. |
-| **Encapsulate** | ⚠️ Parcial | A lógica de conexão está isolada em funções (`get_s3_client`, `get_clickhouse_client`), mas a lógica de transformação está acoplada ao esquema das tabelas. |
+| **Schema-on-Read** | ✅ Implementado | A Camada Bronze (MinIO) aceita qualquer arquivo. A validação só ocorre na Silver, permitindo que a origem mude sem quebrar o storage. |
+| **Encapsulate** | ✅ Implementado | As conexões S3 e ClickHouse estão encapsuladas em funções auxiliares, facilitando a troca do provider de Cloud (ex: S3 para GCS). |
+| **Abstract Common Services**| ✅ Implementado | O uso do Airflow abstrai a lógica de agendamento e dependência do código de negócio (ETL). |
 
 ## 6. Usabilidade (Usability)
-*Foco: Melhorar a experiência do usuário e do operador.*
+*Foco: Facilitar a operação do sistema e o consumo dos KPIs.*
 
-| Tática (Bass) | Implementação no Projeto | Observação Técnica |
+| Tática (Bass) | Implementação no Projeto | Observação Técnica (SRE) |
 |:--- |:--- |:--- |
-| **Interactive Feedback** | ✅ Implementado | Streamlit fornece feedback visual (métricas, gráficos, dataframes) imediato sobre o estado dos dados. |
-| **Error Message Clarity**| ✅ Implementado | Logs do Airflow e Streamlit expõem a causa raiz dos erros (e.g., falha de conexão ou arquivo ausente). |
+| **Interactive Feedback** | ✅ Implementado | Streamlit fornece visualização imediata. O Airflow fornece feedback visual do progresso do pipeline. |
+| **Error Message Clarity**| ✅ Implementado | Erros do ClickHouse e Python são expostos de forma clara para o operador via logs de task. |
 
 ---
 
-### Conclusão e Recomendações SRE
-A arquitetura atual é robusta para um MVP, demonstrando maturidade em **Disponibilidade** (Healthchecks e Retries) e **Desempenho** (ClickHouse). 
+### 🛡️ Cenários de Stress e Resiliência (Plano de Testes SRE)
+Baseado na análise ATAM (Architecture Tradeoff Analysis Method), os seguintes cenários devem ser testados:
 
-**Recomendações Prioritárias:**
-1. **Circuit Breaker:** Implementar verificação de saúde antes de iniciar o processamento pesado na DAG.
-2. **Secret Masking:** Garantir que credenciais sensíveis no Airflow sejam gerenciadas via *Secrets Backend* para evitar exposição em logs.
-3. **Unit Tests:** Adicionar testes com dados sintéticos para garantir que mudanças no esquema não quebrem o pipeline.
+1.  **Cenário de Perda de Conectividade:** Derrubar o container `northwind_analytics` durante a task `aggregate_to_gold`. 
+    *   *Tática esperada:* O Airflow deve aguardar e realizar o **Retry** conforme configurado.
+2.  **Cenário de Dados Corrompidos:** Inserir um CSV com `Discount > 1` (desconto maior que 100%).
+    *   *Tática esperada:* O Ingestor deve capturar a anomalia na camada Silver via **Exception Handling** ou quarentena.
+3.  **Cenário de Reprocessamento:** Executar a DAG 3 vezes seguidas para o mesmo dia.
+    *   *Tática esperada:* A **Idempotência** deve garantir que o faturamento total no Dashboard permaneça inalterado.
 
-**Data da Revisão:** 27 de Maio de 2026
-**Auditor:** Gemini CLI Agent
-**Referência:** [Material Aula 05 - Cloud SRE](https://afonsolelis.github.io/cloud_sre/aulas/aula_05_integracao_etl_serverless_e_catalogo_de_dados/material/material_aula_05_integracao_etl_serverless_e_catalogo_de_dados.html)
+---
+
+### 💡 Recomendações Prioritárias (Roadmap SRE)
+1.  **Implementar Circuit Breaker:** Adicionar uma task de "Pre-flight Check" na DAG para validar a saúde dos bancos antes de iniciar o ETL.
+2.  **Automatizar Testes Unitários:** Criar testes para a fórmula de Receita Líquida usando dados sintéticos (Mocking).
+3.  **Refinar Autorização:** Implementar o princípio do privilégio mínimo para o usuário do Dashboard.
+
+**Data da Revisão:** 31 de Maio de 2026
+**Auditor:** Gemini CLI Agent (Revisão QA Completa)
+**Referência:** [Len Bass - Software Architecture in Practice, 4th Edition](https://afonsolelis.github.io/cloud_sre/aulas/aula_05_integracao_etl_serverless_e_catalogo_de_dados/material/material_aula_05_integracao_etl_serverless_e_catalogo_de_dados.html)
