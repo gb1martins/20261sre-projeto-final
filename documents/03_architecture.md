@@ -14,16 +14,18 @@ Este documento descreve a arquitetura do sistema Northwind ETL seguindo as cinco
 
 ## 2. Visão de Informação (Information Viewpoint)
 **Fluxo de Dados:**
-1. **Landing Zone (MinIO):** Armazenamento de arquivos CSV brutos (Raw).
-2. **Staging/Processing (Python):** Validação, limpeza e normalização.
-3. **Analytics Layer (ClickHouse):** Armazenamento dimensional (Fatos/Dimensões) e visões materializadas (Materialized Views).
-4. **Presentation (Streamlit):** Consumo de KPIs agregados.
+1. **Landing Zone (MinIO):** Armazenamento de arquivos CSV brutos (`orders`, `order_details`).
+2. **Staging/Processing (Python):** Validação e limpeza.
+3. **Analytics Layer (ClickHouse):** 
+    - **Silver:** Tabelas normalizadas.
+    - **Gold:** Join entre `orders` e `order_details` para cálculo da Receita Líquida (`Σ (UnitPrice × Quantity × (1 − Discount))`).
+4. **Presentation (Streamlit):** Consumo de KPIs (Ranking por Produto e Série Temporal).
 
 ## 3. Visão Computacional (Computational Viewpoint)
 **Componentes e Responsabilidades:**
 - **Orquestrador (Airflow/Cron):** Gatilho diário (03:00 AM) e gerenciamento de dependências.
 - **ETL Engine (Python):** Script de ingestão que lê do MinIO, valida esquemas e carrega no ClickHouse.
-- **DW Engine (ClickHouse):** Execução de transformações SQL e persistência otimizada para consultas analíticas.
+- **DW Engine (ClickHouse):** Execução do Join financeiro e persistência de Materialized Views para Rankings (`ProductID`) e Séries Temporais (`OrderDate` mensal).
 - **Interface (Streamlit):** Visualização de dados conectada diretamente ao ClickHouse.
 
 ## 4. Visão de Engenharia (Engineering Viewpoint)

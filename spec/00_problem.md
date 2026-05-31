@@ -13,14 +13,17 @@ Este documento aplica os princípios da Engenharia de Requisitos do SWEBOK para 
 | **Plataforma / SRE** | Infraestrutura resiliente e custo-eficiente. | Diretrizes de Infraestrutura Cloud |
 
 ### 1.2 Contexto de Negócio
-O Northwind requer um fluxo de dados diário para monitorar KPIs de vendas e operação. A confiança nos números é o pilar para o uso do dashboard; sem integridade de dados, o sistema perde sua utilidade estratégica.
+O Northwind requer um fluxo de dados diário para monitorar KPIs de vendas e operação. O KPI central é a **Receita Líquida**, calculada pela fórmula:
+`Receita líquida = Σ (UnitPrice × Quantity × (1 − Discount))`
+
+Este indicador depende do join entre as fontes `orders` e `order_details` através do `OrderID`. A confiança nos números é o pilar para o uso do dashboard; sem integridade de dados, o sistema perde sua utilidade estratégica.
 
 ---
 
 ## 2. Análise de Requisitos
 
 ### 2.1 Fronteiras do Sistema
-- **In-Scope:** Ingestão de arquivos CSV da fonte Northwind, transformações ETL, carga no Banco Analítico, atualização do Dashboard e monitoramento de integridade.
+- **In-Scope:** Ingestão de arquivos CSV (`orders` e `order_details`), transformações ETL (Join e Cálculo de Receita), carga no Banco Analítico, atualização do Dashboard com ranking por `ProductID` e série temporal mensal por `OrderDate`.
 - **Out-of-Scope:** Limpeza de dados na fonte de origem, geração de relatórios manuais e suporte a dashboards de terceiros.
 
 ### 2.2 Análise de Conflitos

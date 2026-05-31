@@ -10,6 +10,8 @@ Este documento mapeia os requisitos funcionais (RF) e não-funcionais (RNF) para
 | RF-04 | Funcional | 01_functional_requirements.md | DW Engine (ClickHouse) | CT-04: Consulta ao modelo dimensional | Aberto |
 | RF-05 | Funcional | 01_functional_requirements.md | Interface (Streamlit) | CT-05: Exibição de KPIs no Dashboard | Aberto |
 | RF-06 | Funcional | 01_functional_requirements.md | ETL Engine (Python) | CT-06: Teste de re-execução sem duplicidade | Aberto |
+| RF-07 | Funcional | 01_functional_requirements.md | ETL / ClickHouse | CT-16: Validação do cálculo de Receita Líquida | Aberto |
+| RF-08 | Funcional | 01_functional_requirements.md | Interface (Streamlit) | CT-17: Verificação de rankings e série temporal | Aberto |
 | RNF-01 | Não-Funcional | 02_non_functional_requirements.md | ETL Engine / ClickHouse | CT-07: Reconciliação de contagem de registros | Aberto |
 | RNF-02 | Não-Funcional | 02_non_functional_requirements.md | Pipeline (E2E) | CT-08: Medição de tempo de execução total | Aberto |
 | RNF-03 | Não-Funcional | 02_non_functional_requirements.md | ETL Engine (Python) | CT-09: Teste de leitura CSV/JSON e escrita DB | Aberto |

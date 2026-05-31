@@ -47,10 +47,22 @@ if client:
             col2.metric("Total de Pedidos", f"{kpi_data[1]}")
             col3.metric("Ticket Médio", f"$ {kpi_data[2]:,.2f}")
             
-            # Gráfico: Vendas por País
-            st.subheader("🌎 Vendas por País")
-            df_country = client.query_df("SELECT ship_country, sum(total_order_value) as vendas FROM gold_order_metrics GROUP BY ship_country ORDER BY vendas DESC")
-            st.bar_chart(df_country.set_index('ship_country'))
+            # Gráficos de Negócio
+            col_left, col_right = st.columns(2)
+            
+            with col_left:
+                st.subheader("🏆 Top 10 Produtos (Receita)")
+                df_products = client.query_df("SELECT CAST(product_id AS String) as product_id, net_revenue FROM gold_product_ranking LIMIT 10")
+                st.bar_chart(df_products.set_index('product_id'))
+            
+            with col_right:
+                st.subheader("🌎 Vendas por País")
+                df_country = client.query_df("SELECT ship_country, sum(total_order_value) as vendas FROM gold_order_metrics GROUP BY ship_country ORDER BY vendas DESC")
+                st.bar_chart(df_country.set_index('ship_country'))
+
+            st.subheader("📈 Evolução Mensal da Receita")
+            df_monthly = client.query_df("SELECT month, net_revenue FROM gold_monthly_revenue ORDER BY month")
+            st.line_chart(df_monthly.set_index('month'))
             
             # Tabela de Dados Gold
             st.subheader("📋 Detalhes dos Pedidos (Gold)")

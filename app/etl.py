@@ -115,9 +115,8 @@ def process_gold(ch_client):
     """Cria visões/tabelas agregadas para negócio (Camada Ouro)."""
     print("--- Camada Ouro: Agregações Analíticas ---")
     
+    # 1. Métricas por Pedido
     ch_client.command("DROP TABLE IF EXISTS gold_order_metrics")
-    
-    # Criando uma tabela ouro com métricas consolidadas
     ch_client.command("""
     CREATE TABLE gold_order_metrics ENGINE = MergeTree() ORDER BY order_id AS
     SELECT 
@@ -132,7 +131,33 @@ def process_gold(ch_client):
     JOIN silver_order_details d ON o.order_id = d.order_id
     GROUP BY o.order_id, o.customer_id, o.order_date, o.ship_country, o.freight
     """)
-    print("Tabela gold_order_metrics criada com sucesso.")
+
+    # 2. Ranking de Produtos por Receita Líquida
+    ch_client.command("DROP TABLE IF EXISTS gold_product_ranking")
+    ch_client.command("""
+    CREATE TABLE gold_product_ranking ENGINE = MergeTree() ORDER BY product_id AS
+    SELECT 
+        product_id,
+        round(SUM(unit_price * quantity * (1 - discount)), 2) AS net_revenue,
+        SUM(quantity) AS total_quantity
+    FROM silver_order_details
+    GROUP BY product_id
+    """)
+
+    # 3. Série Temporal Mensal de Receita Líquida
+    ch_client.command("DROP TABLE IF EXISTS gold_monthly_revenue")
+    ch_client.command("""
+    CREATE TABLE gold_monthly_revenue ENGINE = MergeTree() ORDER BY month AS
+    SELECT 
+        toStartOfMonth(o.order_date) AS month,
+        round(SUM(d.unit_price * d.quantity * (1 - d.discount)), 2) AS net_revenue,
+        COUNT(DISTINCT o.order_id) AS total_orders
+    FROM silver_orders o
+    JOIN silver_order_details d ON o.order_id = d.order_id
+    GROUP BY month
+    """)
+    
+    print("Tabelas da Camada Ouro criadas com sucesso.")
 
 def main():
     print("Iniciando Pipeline Medallion (Bronze -> Silver -> Gold)...")
