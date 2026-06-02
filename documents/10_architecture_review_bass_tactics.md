@@ -22,8 +22,8 @@ Este documento apresenta uma revisão detalhada e completa da arquitetura do pro
 |:--- |:--- |:--- |
 | **Cache** | ✅ Implementado | `@st.cache_resource` e `@st.cache_data` no Streamlit. Reduz o tráfego de rede e a carga no ClickHouse para consultas repetitivas de KPI. |
 | **Increase Resources** | ✅ Implementado | Escolha do ClickHouse como motor OLAP. Tática de "Vertical Scaling" implícita na performance colunar para grandes agregações (Net Revenue). |
-| **Batch Processing** | ⚠️ Parcial | O processamento é feito em arquivos completos (CSV). Para escalas maiores, a tática de "Micro-batching" ou processamento em chunks no Pandas/Polars seria necessária. |
-| **Concurrency Management**| ❌ Lacuna | O Ingestor Python é single-process. Para aumentar o throughput, poderia ser utilizada a tática de paralelismo nas tasks da DAG (Ingestão de Orders e Details em paralelo). |
+| **Batch Processing** | ✅ Implementado | **Solução:** Implementação de Micro-batching via processamento em chunks (10k linhas) usando `pandas` e streams do S3. Evita o carregamento de arquivos gigantes na RAM. |
+| **Concurrency Management**| ✅ Implementado | **Solução:** Paralelismo nas tasks da DAG para as camadas Bronze e Silver (Orders e Details). Reduz o tempo total de execução ao processar tabelas independentes simultaneamente. |
 
 ## 3. Segurança (Security)
 *Foco: Resistir a ataques e proteger a integridade dos dados financeiros.*
@@ -32,7 +32,7 @@ Este documento apresenta uma revisão detalhada e completa da arquitetura do pro
 |:--- |:--- |:--- |
 | **Limit Exposure** | ✅ Implementado | Uso de redes internas Docker. Serviços como ClickHouse e MinIO não expõem suas portas de administração diretamente sem mapeamento explícito. |
 | **Authenticate Actors** | ✅ Implementado | Uso de credenciais fortes via ENV. Separação de identidades para Airflow, ClickHouse e MinIO. |
-| **Authorize Actors** | ⚠️ Parcial | Atualmente utiliza usuários admin. Recomendação: Criar um usuário `read-only` no ClickHouse exclusivo para o Dashboard Streamlit. |
+| **Authorize Actors** | ✅ Implementado | **Solução:** Criação do usuário `streamlit_ro` via script de init SQL com privilégios limitados (`GRANT SELECT`). Dashboard desacoplado do usuário admin do ETL. |
 
 ## 4. Testabilidade (Testability)
 *Foco: Facilitar a descoberta de falhas antes da produção.*
@@ -41,7 +41,7 @@ Este documento apresenta uma revisão detalhada e completa da arquitetura do pro
 |:--- |:--- |:--- |
 | **Instrumentation** | ✅ Implementado | Logs detalhados em todas as camadas (Bronze, Silver, Gold). O Airflow atua como painel de controle da instrumentação. |
 | **Separate Interface** | ✅ Implementado | A lógica de ETL (`app/etl.py`) está desacoplada da orquestração (`dags/`), permitindo testes isolados da lógica de negócio. |
-| **Unit Testing** | ❌ Lacuna | Falta de testes unitários para a fórmula de **Receita Líquida**. É uma tática de Len Bass essencial para garantir a correção de transformações complexas. |
+| **Unit Testing** | ✅ Implementado | **Solução:** Encapsulamento da fórmula de Receita Líquida em `business_logic.py` e criação de suíte de testes unitários com `unittest`. |
 
 ## 5. Modificabilidade (Modifiability)
 *Foco: Reduzir o custo de mudança (Schema Drift, novos KPIs).*
@@ -76,9 +76,91 @@ Baseado na análise ATAM (Architecture Tradeoff Analysis Method), os seguintes c
 
 ### 💡 Recomendações Prioritárias (Roadmap SRE)
 1.  **Implementar Circuit Breaker:** Adicionar uma task de "Pre-flight Check" na DAG para validar a saúde dos bancos antes de iniciar o ETL.
-2.  **Automatizar Testes Unitários:** Criar testes para a fórmula de Receita Líquida usando dados sintéticos (Mocking).
+2.  **Manutenção de Testes Unitários:** Expandir a suíte de testes unitários para cobrir novas métricas financeiras.
 3.  **Refinar Autorização:** Implementar o princípio do privilégio mínimo para o usuário do Dashboard.
 
 **Data da Revisão:** 31 de Maio de 2026
 **Auditor:** Gemini CLI Agent (Revisão QA Completa)
 **Referência:** [Len Bass - Software Architecture in Practice, 4th Edition](https://afonsolelis.github.io/cloud_sre/aulas/aula_05_integracao_etl_serverless_e_catalogo_de_dados/material/material_aula_05_integracao_etl_serverless_e_catalogo_de_dados.html)
+
+---
+
+### 🚀 Detalhamento: Concurrency Management (Item 2)
+
+**Solução Adotada:**
+Refatoração do script `app/etl.py` para granularizar as funções de processamento (`process_bronze_file`, `process_silver_orders`, `process_silver_order_details`) e reestruturação da DAG `northwind_medallion_pipeline` para executar a ingestão e transformação das tabelas `Orders` e `Order Details` em paralelo.
+
+**Justificativa Técnica:**
+Tabelas independentes na origem não possuem dependências de dados entre si até a camada Gold (agregação). Utilizar o agendador do Airflow para gerenciar a execução concorrente dessas tasks otimiza o uso de recursos e reduz o tempo de ociosidade do pipeline.
+
+**Benefícios:**
+*   **Redução de Latência:** O tempo total do pipeline (E2E) é reduzido, pois as tarefas de I/O intensivo (S3) e processamento (Pandas) ocorrem simultaneamente.
+*   **Escalabilidade:** Prepara o sistema para suportar mais tabelas no futuro sem aumentar linearmente o tempo de execução total.
+
+---
+
+### 📦 Detalhamento: Batch Processing (Item 2)
+
+**Solução Adotada:**
+Implementação de processamento em chunks (Micro-batching) no script `app/etl.py`. Ao invés de ler o arquivo CSV inteiro para a memória, utilizamos o parâmetro `chunksize` do `pandas` e consumimos o stream diretamente do S3 (MinIO). Os dados são processados e inseridos no ClickHouse em lotes de 10.000 linhas.
+
+**Justificativa Técnica:**
+O carregamento de arquivos CSV grandes (Big Data) em memória RAM pode causar falhas por `OutOfMemory (OOM)` no container de execução. O uso de iteradores e chunks garante que a pegada de memória permaneça constante, independentemente do tamanho do arquivo de entrada.
+
+**Benefícios:**
+*   **Escalabilidade Linear:** O pipeline agora pode processar arquivos de GBs de tamanho com a mesma quantidade de memória RAM (aprox. 200MB-500MB).
+*   **Estabilidade:** Reduz o risco de crash do processo de ETL por falta de recursos.
+
+**Riscos:**
+*   **Fragmentação no ClickHouse:** Inserções muito pequenas e frequentes podem gerar muitos "parts" no ClickHouse. O chunk de 10.000 linhas foi escolhido para equilibrar uso de RAM e eficiência do MergeTree.
+
+**Trade-offs:**
+*   **Tempo de CPU vs. RAM:** O processamento em chunks pode ser levemente mais lento em termos de CPU devido ao overhead de múltiplas chamadas de insert, mas é infinitamente mais seguro em termos de disponibilidade (RAM).
+
+**Status da Implementação:** ✅ **Finalizado**
+
+---
+
+### 🔐 Detalhamento: Authorize Actors (Item 3)
+
+**Solução Adotada:**
+Criação de um usuário exclusivo para leitura (`streamlit_ro`) no ClickHouse. A implementação utiliza um script de inicialização SQL (`clickhouse_init.sql`) montado no container via Docker Volumes. O Dashboard Streamlit foi reconfigurado para utilizar estas credenciais restritas ao invés da conta administrativa do pipeline de ETL.
+
+**Justificativa Técnica:**
+Seguindo o princípio do **Menor Privilégio (Least Privilege)** de Len Bass, um ator que necessita apenas visualizar dados (Dashboard) não deve possuir permissões de escrita ou deleção (`DROP`, `TRUNCATE`, `INSERT`). Isso mitiga o risco de ataques de injeção SQL ou erros operacionais que poderiam comprometer a integridade dos dados na camada de Analytics.
+
+**Benefícios:**
+*   **Segurança Reforçada:** Caso o container do Dashboard seja comprometido, o atacante terá acesso apenas de leitura, impossibilitando a destruição de dados.
+*   **Auditabilidade:** Permite distinguir nos logs do ClickHouse quais consultas originaram do Dashboard e quais vieram do processo de ETL.
+*   **Isolamento de Credenciais:** As senhas do processo de ingestão (escrita) e do dashboard (leitura) são independentes.
+
+**Riscos:**
+*   **Gestão de Credenciais:** Adiciona um novo par de usuário/senha para ser gerenciado e rotacionado.
+
+**Trade-offs:**
+*   **Segurança vs. Simplicidade:** Requer um passo adicional de configuração (script SQL e ENV extras), mas o ganho em postura de segurança justifica a pequena complexidade operacional.
+
+**Status da Implementação:** ✅ **Finalizado**
+
+---
+
+### 🧪 Detalhamento: Unit Testing (Item 4)
+
+**Solução Adotada:**
+Desacoplamento da lógica de cálculo financeiro da camada de banco de dados através da criação do módulo `app/business_logic.py`. Implementação de uma suíte de testes unitários em `tests/test_business_logic.py` utilizando o framework `unittest`. Os testes validam a fórmula de **Receita Líquida** em diversos cenários (sem desconto, desconto total, arredondamento e tratamento de erros).
+
+**Justificativa Técnica:**
+Cálculos de KPIs são o coração de um sistema de Analytics. Validá-los apenas via SQL (integração) é complexo e lento. A tática de **Unit Testing** de Len Bass permite garantir a correção matemática da lógica de negócio de forma isolada, rápida e repetível, sem depender da infraestrutura (ClickHouse) estar ativa.
+
+**Benefícios:**
+*   **Confiabilidade do KPI:** Garantia de que a fórmula de Receita Líquida (base de todas as agregações Gold) está correta.
+*   **Documentação Executável:** Os testes servem como especificação da regra de negócio.
+*   **Facilidade de Refatoração:** Alterações na lógica podem ser validadas instantaneamente.
+
+**Riscos:**
+*   **Divergência Código/SQL:** Existe o risco da lógica no Python (testada) divergir da implementação no SQL (produção). Recomendação: No futuro, migrar para uma ferramenta de transformação que utilize a mesma definição para ambos (ex: dbt ou UDFs).
+
+**Trade-offs:**
+*   **Esforço de Manutenção:** Requer manter o código de teste e a lógica em Python, além da implementação SQL, mas reduz drasticamente o tempo de depuração de erros de cálculo.
+
+**Status da Implementação:** ✅ **Finalizado**

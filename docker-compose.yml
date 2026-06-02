@@ -39,13 +39,6 @@ services:
       - ./dags:/opt/airflow/dags
       - ./app:/opt/airflow/app
       - ./data:/data
-    depends_on:
-      postgres:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
 
   airflow-webserver:
     <<: *airflow-common
@@ -53,6 +46,15 @@ services:
     container_name: northwind_airflow_webserver
     ports:
       - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 10s
@@ -63,11 +65,27 @@ services:
     <<: *airflow-common
     command: scheduler
     container_name: northwind_airflow_scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
 
   airflow-init:
     <<: *airflow-common
     command: db init
     container_name: northwind_airflow_init
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     environment:
       <<: *airflow-common-env
       _AIRFLOW_DB_UPGRADE: 'true'
@@ -85,9 +103,9 @@ services:
       - "9004:9000" # Native interface (Changed from 9000 to avoid conflict with MinIO)
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse_init.sql:/docker-entrypoint-initdb.d/init.sql
     environment:
-      - CLICKHOUSE_USER=northwind
-      - CLICKHOUSE_PASSWORD=northwind
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
       interval: 10s
@@ -109,8 +127,8 @@ services:
     environment:
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=8123
-      - CLICKHOUSE_USER=northwind
-      - CLICKHOUSE_PASSWORD=northwind
+      - CLICKHOUSE_USER=streamlit_ro
+      - CLICKHOUSE_PASSWORD=streamlit_ro_pass
     command: streamlit run streamlit_app.py --server.address=0.0.0.0 --server.port=8501
     depends_on:
       clickhouse:

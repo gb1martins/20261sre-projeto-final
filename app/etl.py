@@ -16,6 +16,9 @@ CH_PORT = int(os.getenv("CLICKHOUSE_PORT", 8123))
 CH_USER = os.getenv("CLICKHOUSE_USER", "northwind")
 CH_PASS = os.getenv("CLICKHOUSE_PASSWORD", "northwind")
 
+# Batch Processing: Tamanho do chunk para processamento de arquivos CSV
+CHUNK_SIZE = 10000
+
 def get_s3_client():
     return boto3.client(
         's3',
@@ -28,45 +31,55 @@ def get_s3_client():
 def get_clickhouse_client():
     return clickhouse_connect.get_client(host=CH_HOST, port=CH_PORT, username=CH_USER, password=CH_PASS)
 
+def check_connections():
+    """Valida a conectividade com MinIO e ClickHouse (Pre-flight Check)."""
+    print("--- Pre-flight Check: Verificando Infraestrutura ---")
+    
+    # Validar S3 (MinIO)
+    try:
+        s3 = get_s3_client()
+        s3.list_buckets()
+        print("✅ Conexão com MinIO: OK")
+    except Exception as e:
+        print(f"❌ Erro de conexão com MinIO: {e}")
+        raise
+
+    # Validar ClickHouse
+    try:
+        ch = get_clickhouse_client()
+        ch.command("SELECT 1")
+        print("✅ Conexão com ClickHouse: OK")
+    except Exception as e:
+        print(f"❌ Erro de conexão com ClickHouse: {e}")
+        raise
+
+def process_bronze_file(s3_client, file_name):
+    """Lê um arquivo local e salva como RAW no MinIO (Camada Bronze)."""
+    # Garantir que o bucket existe
+    try:
+        s3_client.create_bucket(Bucket=S3_BUCKET)
+    except (s3_client.exceptions.BucketAlreadyOwnedByYou, s3_client.exceptions.BucketAlreadyExists):
+        pass
+
+    local_path = f'/data/{file_name}'
+    if os.path.exists(local_path):
+        s3_key = f'bronze/{file_name}'
+        print(f"Subindo {local_path} para s3://{S3_BUCKET}/{s3_key}...")
+        s3_client.upload_file(local_path, S3_BUCKET, s3_key)
+    else:
+        print(f"Aviso: Arquivo {local_path} não encontrado.")
+
 def process_bronze(s3_client):
     """Lê arquivos locais e salva como RAW no MinIO (Camada Bronze)."""
     print("--- Camada Bronze: Iniciando Ingestão Raw ---")
     files = ['northwind_orders.csv', 'northwind_order_details.csv']
-    
-    # Garantir que o bucket existe
-    try:
-        s3_client.create_bucket(Bucket=S3_BUCKET)
-    except s3_client.exceptions.BucketAlreadyOwnedByYou:
-        pass
-    except s3_client.exceptions.BucketAlreadyExists:
-        pass
-
     for file_name in files:
-        local_path = f'/data/{file_name}'
-        if os.path.exists(local_path):
-            s3_key = f'bronze/{file_name}'
-            print(f"Subindo {local_path} para s3://{S3_BUCKET}/{s3_key}...")
-            s3_client.upload_file(local_path, S3_BUCKET, s3_key)
-        else:
-            print(f"Aviso: Arquivo {local_path} não encontrado.")
+        process_bronze_file(s3_client, file_name)
 
-def process_silver(s3_client, ch_client):
-    """Lê da Bronze, limpa, tipa e salva no ClickHouse (Camada Prata)."""
-    print("--- Camada Prata: Limpeza e Estruturação ---")
-    
-    # 1. Processar Orders
-    print("Processando silver_orders...")
+def process_silver_orders(s3_client, ch_client):
+    """Lê Orders da Bronze, limpa, tipa e salva no ClickHouse (Camada Prata) em chunks."""
+    print(f"Processando silver_orders em chunks de {CHUNK_SIZE} (Batch Processing)...")
     obj = s3_client.get_object(Bucket=S3_BUCKET, Key='bronze/northwind_orders.csv')
-    df_orders = pd.read_csv(BytesIO(obj['Body'].read()))
-    
-    # Limpeza e Tipagem
-    df_orders['order_date'] = pd.to_datetime(df_orders['order_date']).dt.date
-    df_orders['shipped_date'] = pd.to_datetime(df_orders['shipped_date']).dt.date
-    df_orders['required_date'] = pd.to_datetime(df_orders['required_date']).dt.date
-    df_orders['freight'] = df_orders['freight'].fillna(0).astype(float)
-    
-    # Clickhouse connect e Nullable(Date) precisam de None para NaT
-    df_orders = df_orders.replace({np.nan: None})
     
     ch_client.command("DROP TABLE IF EXISTS silver_orders")
     ch_client.command("""
@@ -86,16 +99,21 @@ def process_silver(s3_client, ch_client):
     """)
     
     cols_orders = ['order_id', 'customer_id', 'employee_id', 'order_date', 'required_date', 'shipped_date', 'ship_via', 'freight', 'ship_name', 'ship_city', 'ship_country']
-    ch_client.insert('silver_orders', df_orders[cols_orders].values.tolist(), column_names=cols_orders)
-
-    # 2. Processar Order Details
-    print("Processando silver_order_details...")
-    obj = s3_client.get_object(Bucket=S3_BUCKET, Key='bronze/northwind_order_details.csv')
-    df_details = pd.read_csv(BytesIO(obj['Body'].read()))
     
-    df_details['unit_price'] = df_details['unit_price'].astype(float)
-    df_details['quantity'] = df_details['quantity'].astype(int)
-    df_details['discount'] = df_details['discount'].astype(float)
+    # Ler o stream do S3 em chunks
+    for chunk in pd.read_csv(obj['Body'], chunksize=CHUNK_SIZE):
+        chunk['order_date'] = pd.to_datetime(chunk['order_date']).dt.date
+        chunk['shipped_date'] = pd.to_datetime(chunk['shipped_date']).dt.date
+        chunk['required_date'] = pd.to_datetime(chunk['required_date']).dt.date
+        chunk['freight'] = chunk['freight'].fillna(0).astype(float)
+        chunk = chunk.replace({np.nan: None})
+        
+        ch_client.insert('silver_orders', chunk[cols_orders].values.tolist(), column_names=cols_orders)
+
+def process_silver_order_details(s3_client, ch_client):
+    """Lê Order Details da Bronze, limpa, tipa e salva no ClickHouse (Camada Prata) em chunks."""
+    print(f"Processando silver_order_details em chunks de {CHUNK_SIZE} (Batch Processing)...")
+    obj = s3_client.get_object(Bucket=S3_BUCKET, Key='bronze/northwind_order_details.csv')
     
     ch_client.command("DROP TABLE IF EXISTS silver_order_details")
     ch_client.command("""
@@ -109,7 +127,20 @@ def process_silver(s3_client, ch_client):
     """)
     
     cols_details = ['order_id', 'product_id', 'unit_price', 'quantity', 'discount']
-    ch_client.insert('silver_order_details', df_details[cols_details].values.tolist(), column_names=cols_details)
+    
+    # Ler o stream do S3 em chunks
+    for chunk in pd.read_csv(obj['Body'], chunksize=CHUNK_SIZE):
+        chunk['unit_price'] = chunk['unit_price'].astype(float)
+        chunk['quantity'] = chunk['quantity'].astype(int)
+        chunk['discount'] = chunk['discount'].astype(float)
+        
+        ch_client.insert('silver_order_details', chunk[cols_details].values.tolist(), column_names=cols_details)
+
+def process_silver(s3_client, ch_client):
+    """Lê da Bronze, limpa, tipa e salva no ClickHouse (Camada Prata)."""
+    print("--- Camada Prata: Limpeza e Estruturação ---")
+    process_silver_orders(s3_client, ch_client)
+    process_silver_order_details(s3_client, ch_client)
 
 def process_gold(ch_client):
     """Cria visões/tabelas agregadas para negócio (Camada Ouro)."""

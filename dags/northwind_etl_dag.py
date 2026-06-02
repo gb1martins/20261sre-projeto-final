@@ -7,7 +7,15 @@ import os
 # Adiciona o diretório /opt/airflow/app ao path para importar o etl.py
 sys.path.append('/opt/airflow/app')
 
-from etl import process_bronze, process_silver, process_gold, get_s3_client, get_clickhouse_client
+from etl import (
+    process_bronze_file, 
+    process_silver_orders, 
+    process_silver_order_details, 
+    process_gold, 
+    get_s3_client, 
+    get_clickhouse_client, 
+    check_connections
+)
 
 default_args = {
     'owner': 'airflow',
@@ -19,18 +27,30 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
-def run_bronze():
+def run_bronze_orders():
     s3 = get_s3_client()
-    process_bronze(s3)
+    process_bronze_file(s3, 'northwind_orders.csv')
 
-def run_silver():
+def run_bronze_details():
+    s3 = get_s3_client()
+    process_bronze_file(s3, 'northwind_order_details.csv')
+
+def run_silver_orders():
     s3 = get_s3_client()
     ch = get_clickhouse_client()
-    process_silver(s3, ch)
+    process_silver_orders(s3, ch)
+
+def run_silver_details():
+    s3 = get_s3_client()
+    ch = get_clickhouse_client()
+    process_silver_order_details(s3, ch)
 
 def run_gold():
     ch = get_clickhouse_client()
     process_gold(ch)
+
+def run_pre_flight():
+    check_connections()
 
 with DAG(
     'northwind_medallion_pipeline',
@@ -41,14 +61,31 @@ with DAG(
     tags=['northwind', 'etl'],
 ) as dag:
 
-    task_bronze = PythonOperator(
-        task_id='ingest_to_bronze',
-        python_callable=run_bronze,
+    task_pre_flight = PythonOperator(
+        task_id='pre_flight_check',
+        python_callable=run_pre_flight,
     )
 
-    task_silver = PythonOperator(
-        task_id='transform_to_silver',
-        python_callable=run_silver,
+    # Camada Bronze em Paralelo
+    task_bronze_orders = PythonOperator(
+        task_id='ingest_orders_to_bronze',
+        python_callable=run_bronze_orders,
+    )
+
+    task_bronze_details = PythonOperator(
+        task_id='ingest_details_to_bronze',
+        python_callable=run_bronze_details,
+    )
+
+    # Camada Silver em Paralelo
+    task_silver_orders = PythonOperator(
+        task_id='transform_orders_to_silver',
+        python_callable=run_silver_orders,
+    )
+
+    task_silver_details = PythonOperator(
+        task_id='transform_details_to_silver',
+        python_callable=run_silver_details,
     )
 
     task_gold = PythonOperator(
@@ -56,4 +93,12 @@ with DAG(
         python_callable=run_gold,
     )
 
-    task_bronze >> task_silver >> task_gold
+    # Fluxo com Paralelismo: 
+    # Orders e Details são independentes até a Camada Gold.
+    task_pre_flight >> [task_bronze_orders, task_bronze_details]
+    
+    task_bronze_orders >> task_silver_orders
+    task_bronze_details >> task_silver_details
+    
+    [task_silver_orders, task_silver_details] >> task_gold
+
