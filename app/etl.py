@@ -4,7 +4,7 @@ import clickhouse_connect
 import pandas as pd
 import numpy as np
 from io import BytesIO
-from otel_setup import setup_otel
+from otel_setup import setup_otel, flush_otel
 import time
 
 # OTel Setup
@@ -104,6 +104,7 @@ def process_bronze(s3_client):
         process_duration.record(duration, {"layer": "bronze"})
         span.set_attribute("etl.layer", "bronze")
         span.set_attribute("etl.duration_ms", duration)
+        flush_otel()
 
 def process_silver_orders(s3_client, ch_client):
     """Lê Orders da Bronze, limpa, tipa e salva no ClickHouse (Camada Prata) em chunks."""
@@ -144,6 +145,7 @@ def process_silver_orders(s3_client, ch_client):
         
         orders_counter.add(total_orders)
         span.set_attribute("business.orders_count", total_orders)
+        flush_otel()
 
 def process_silver_order_details(s3_client, ch_client):
     """Lê Order Details da Bronze, limpa, tipa e salva no ClickHouse (Camada Prata) em chunks."""
@@ -179,6 +181,7 @@ def process_silver_order_details(s3_client, ch_client):
         
         revenue_counter.add(total_revenue)
         span.set_attribute("business.revenue", total_revenue)
+        flush_otel()
 
 def process_silver(s3_client, ch_client):
     """Lê da Bronze, limpa, tipa e salva no ClickHouse (Camada Prata)."""
@@ -192,6 +195,7 @@ def process_silver(s3_client, ch_client):
         process_duration.record(duration, {"layer": "silver"})
         span.set_attribute("etl.layer", "silver")
         span.set_attribute("etl.duration_ms", duration)
+        flush_otel()
 
 def process_gold(ch_client):
     """Cria visões/tabelas agregadas para negócio (Camada Ouro)."""
@@ -245,6 +249,7 @@ def process_gold(ch_client):
         process_duration.record(duration, {"layer": "gold"})
         span.set_attribute("etl.layer", "gold")
         span.set_attribute("etl.duration_ms", duration)
+        flush_otel()
         print("Tabelas da Camada Ouro criadas com sucesso.")
 
 def main():

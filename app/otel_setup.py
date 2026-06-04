@@ -10,7 +10,11 @@ from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExport
 
 OTEL_COLLECTOR_URL = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4317")
 
+_METER_PROVIDER = None
+_TRACER_PROVIDER = None
+
 def setup_otel(service_name):
+    global _METER_PROVIDER, _TRACER_PROVIDER
     resource = Resource(attributes={
         SERVICE_NAME: service_name
     })
@@ -18,14 +22,20 @@ def setup_otel(service_name):
     # Metrics Setup
     metric_exporter = OTLPMetricExporter(endpoint=OTEL_COLLECTOR_URL, insecure=True)
     reader = PeriodicExportingMetricReader(metric_exporter)
-    meter_provider = MeterProvider(resource=resource, metric_readers=[reader])
-    metrics.set_meter_provider(meter_provider)
+    _METER_PROVIDER = MeterProvider(resource=resource, metric_readers=[reader])
+    metrics.set_meter_provider(_METER_PROVIDER)
 
     # Tracing Setup
-    tracer_provider = TracerProvider(resource=resource)
+    _TRACER_PROVIDER = TracerProvider(resource=resource)
     trace_exporter = OTLPSpanExporter(endpoint=OTEL_COLLECTOR_URL, insecure=True)
     span_processor = BatchSpanProcessor(trace_exporter)
-    tracer_provider.add_span_processor(span_processor)
-    trace.set_tracer_provider(tracer_provider)
+    _TRACER_PROVIDER.add_span_processor(span_processor)
+    trace.set_tracer_provider(_TRACER_PROVIDER)
 
     return metrics.get_meter(service_name), trace.get_tracer(service_name)
+
+def flush_otel():
+    if _METER_PROVIDER:
+        _METER_PROVIDER.force_flush()
+    if _TRACER_PROVIDER:
+        _TRACER_PROVIDER.force_flush()
