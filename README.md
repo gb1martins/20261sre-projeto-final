@@ -28,7 +28,17 @@ O sistema é composto pelos seguintes componentes:
     *   **Jaeger (Traces):** `http://localhost:16686`
     *   **ClickHouse:** `http://localhost:8123`
 
-3.  **Executar Testes de Carga (k6):**
+3.  **Execução do Pipeline (Comportamento Esperado):**
+    Toda a infraestrutura (bancos, storage, dashboards e coletores) inicia automaticamente e está 100% operacional. Seguindo as melhores práticas de Engenharia de Dados e SRE, o processamento de dados (ETL) é um **Job sob demanda** e deve ser disparado manualmente para popular o sistema:
+
+    ```bash
+    docker exec northwind_ingestor python etl.py
+    ```
+
+    **Observação sobre o Jaeger:**
+    É um comportamento padrão e esperado de ferramentas de Rastreamento Distribuído listar serviços apenas **após o envio do primeiro sinal**. Portanto, o serviço `northwind-etl` aparecerá na interface do Jaeger imediatamente após a primeira execução bem-sucedida do comando acima.
+
+4.  **Executar Testes de Carga (k6):**
     ```bash
     # Teste de carga no Dashboard
     docker run --rm -v "${PWD}/tests/load:/scripts" grafana/k6 run /scripts/dashboard_load.js
