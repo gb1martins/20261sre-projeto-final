@@ -77,19 +77,25 @@ def check_connections():
 
 def process_bronze_file(s3_client, file_name):
     """Lê um arquivo local e salva como RAW no MinIO (Camada Bronze)."""
-    # Garantir que o bucket existe
-    try:
-        s3_client.create_bucket(Bucket=S3_BUCKET)
-    except (s3_client.exceptions.BucketAlreadyOwnedByYou, s3_client.exceptions.BucketAlreadyExists):
-        pass
+    with tracer.start_as_current_span("process_bronze_file") as span:
+        span.set_attribute("file_name", file_name)
+        # Garantir que o bucket existe
+        try:
+            s3_client.create_bucket(Bucket=S3_BUCKET)
+        except (s3_client.exceptions.BucketAlreadyOwnedByYou, s3_client.exceptions.BucketAlreadyExists):
+            pass
 
-    local_path = f'/data/{file_name}'
-    if os.path.exists(local_path):
-        s3_key = f'bronze/{file_name}'
-        print(f"Subindo {local_path} para s3://{S3_BUCKET}/{s3_key}...")
-        s3_client.upload_file(local_path, S3_BUCKET, s3_key)
-    else:
-        print(f"Aviso: Arquivo {local_path} não encontrado.")
+        local_path = f'/data/{file_name}'
+        if os.path.exists(local_path):
+            s3_key = f'bronze/{file_name}'
+            print(f"Subindo {local_path} para s3://{S3_BUCKET}/{s3_key}...")
+            s3_client.upload_file(local_path, S3_BUCKET, s3_key)
+            span.set_attribute("status", "success")
+        else:
+            print(f"Aviso: Arquivo {local_path} não encontrado.")
+            span.set_attribute("status", "not_found")
+    
+    flush_otel()
 
 def process_bronze(s3_client):
     """Lê arquivos locais e salva como RAW no MinIO (Camada Bronze)."""
@@ -104,7 +110,8 @@ def process_bronze(s3_client):
         process_duration.record(duration, {"layer": "bronze"})
         span.set_attribute("etl.layer", "bronze")
         span.set_attribute("etl.duration_ms", duration)
-        flush_otel()
+    
+    flush_otel()
 
 def process_silver_orders(s3_client, ch_client):
     """Lê Orders da Bronze, limpa, tipa e salva no ClickHouse (Camada Prata) em chunks."""
@@ -145,7 +152,8 @@ def process_silver_orders(s3_client, ch_client):
         
         orders_counter.add(total_orders)
         span.set_attribute("business.orders_count", total_orders)
-        flush_otel()
+    
+    flush_otel()
 
 def process_silver_order_details(s3_client, ch_client):
     """Lê Order Details da Bronze, limpa, tipa e salva no ClickHouse (Camada Prata) em chunks."""
@@ -181,7 +189,8 @@ def process_silver_order_details(s3_client, ch_client):
         
         revenue_counter.add(total_revenue)
         span.set_attribute("business.revenue", total_revenue)
-        flush_otel()
+    
+    flush_otel()
 
 def process_silver(s3_client, ch_client):
     """Lê da Bronze, limpa, tipa e salva no ClickHouse (Camada Prata)."""
@@ -195,7 +204,8 @@ def process_silver(s3_client, ch_client):
         process_duration.record(duration, {"layer": "silver"})
         span.set_attribute("etl.layer", "silver")
         span.set_attribute("etl.duration_ms", duration)
-        flush_otel()
+    
+    flush_otel()
 
 def process_gold(ch_client):
     """Cria visões/tabelas agregadas para negócio (Camada Ouro)."""
@@ -249,8 +259,9 @@ def process_gold(ch_client):
         process_duration.record(duration, {"layer": "gold"})
         span.set_attribute("etl.layer", "gold")
         span.set_attribute("etl.duration_ms", duration)
-        flush_otel()
         print("Tabelas da Camada Ouro criadas com sucesso.")
+    
+    flush_otel()
 
 def main():
     print("Iniciando Pipeline Medallion (Bronze -> Silver -> Gold)...")
